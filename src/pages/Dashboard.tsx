@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
 import { useAuth } from '@/contexts/AuthContext'
+import { supabase } from '@/integrations/supabase/client'
 import { 
   Target, 
   BookOpen, 
@@ -19,24 +20,70 @@ import {
 
 export default function Dashboard() {
   const { user } = useAuth()
-  const [dailyStreak, setDailyStreak] = useState(5)
+  const [profile, setProfile] = useState<any>(null)
+  const [recentResults, setRecentResults] = useState<any[]>([])
+  const [stats, setStats] = useState({
+    totalQuizzes: 0,
+    averageScore: 0,
+    streakCount: 0,
+    totalScore: 0
+  })
   const [todayQuizCompleted, setTodayQuizCompleted] = useState(false)
 
-  // Sample data - replace with actual data from Supabase
-  const stats = {
-    totalQuizzes: 42,
-    averageScore: 78,
-    currentStreak: dailyStreak,
-    weeklyProgress: 85,
-    rank: 156,
-    totalUsers: 2341
-  }
+  useEffect(() => {
+    if (user) {
+      fetchUserData()
+    }
+  }, [user])
 
-  const recentQuizzes = [
-    { subject: 'General Knowledge', score: 85, date: '2024-01-12', total: 20 },
-    { subject: 'Indian Constitution', score: 72, date: '2024-01-11', total: 15 },
-    { subject: 'Current Affairs', score: 90, date: '2024-01-10', total: 25 },
-  ]
+  const fetchUserData = async () => {
+    if (!user) return
+
+    try {
+      // Fetch user profile
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('user_id', user.id)
+        .single()
+
+      setProfile(profileData)
+
+      // Fetch recent quiz results
+      const { data: resultsData } = await supabase
+        .from('quiz_results')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('completed_at', { ascending: false })
+        .limit(5)
+
+      setRecentResults(resultsData || [])
+
+      // Check if today's quiz is completed
+      const today = new Date().toISOString().split('T')[0]
+      const todayResult = resultsData?.find(result => 
+        result.completed_at.startsWith(today) && result.quiz_type === 'daily'
+      )
+      setTodayQuizCompleted(!!todayResult)
+
+      // Calculate stats
+      if (resultsData && resultsData.length > 0) {
+        const totalQuizzes = resultsData.length
+        const totalScore = resultsData.reduce((sum, result) => sum + result.score, 0)
+        const totalPossible = resultsData.reduce((sum, result) => sum + result.total_questions, 0)
+        const averageScore = totalPossible > 0 ? Math.round((totalScore / totalPossible) * 100) : 0
+
+        setStats({
+          totalQuizzes,
+          averageScore,
+          streakCount: profileData?.streak_count || 0,
+          totalScore: profileData?.total_score || 0
+        })
+      }
+    } catch (error) {
+      console.error('Error fetching user data:', error)
+    }
+  }
 
   return (
     <DashboardLayout>
@@ -45,7 +92,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold">
-              Welcome back, {user?.user_metadata?.full_name || 'Student'}! 👋
+              Welcome back, {profile?.full_name || user?.email}! 👋
             </h1>
             <p className="text-muted-foreground mt-1">
               Ready to continue your exam preparation journey?
@@ -53,7 +100,7 @@ export default function Dashboard() {
           </div>
           <Badge variant="secondary" className="flex items-center gap-1">
             <Flame className="h-4 w-4 text-orange-500" />
-            {stats.currentStreak} day streak
+            {stats.streakCount} day streak
           </Badge>
         </div>
 
@@ -82,7 +129,7 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-muted-foreground mb-2">
-                    15 questions • Mixed subjects • 10 minutes
+                    5 questions • Mixed subjects • 10 minutes
                   </p>
                   <Link to="/quiz/daily">
                     <Button size="lg" className="font-semibold">
@@ -115,7 +162,7 @@ export default function Dashboard() {
             <CardContent>
               <div className="text-2xl font-bold">{stats.totalQuizzes}</div>
               <p className="text-xs text-muted-foreground">
-                +3 from last week
+                Completed quizzes
               </p>
             </CardContent>
           </Card>
@@ -128,7 +175,7 @@ export default function Dashboard() {
             <CardContent>
               <div className="text-2xl font-bold">{stats.averageScore}%</div>
               <p className="text-xs text-muted-foreground">
-                +5% from last month
+                Overall performance
               </p>
             </CardContent>
           </Card>
@@ -139,7 +186,7 @@ export default function Dashboard() {
               <Flame className="h-4 w-4 text-orange-500" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats.currentStreak} days</div>
+              <div className="text-2xl font-bold">{stats.streakCount} days</div>
               <p className="text-xs text-muted-foreground">
                 Keep it up!
               </p>
@@ -148,48 +195,17 @@ export default function Dashboard() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Your Rank</CardTitle>
+              <CardTitle className="text-sm font-medium">Total Points</CardTitle>
               <Trophy className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">#{stats.rank}</div>
+              <div className="text-2xl font-bold">{stats.totalScore}</div>
               <p className="text-xs text-muted-foreground">
-                of {stats.totalUsers.toLocaleString()} users
+                Points earned
               </p>
             </CardContent>
           </Card>
         </div>
-
-        {/* Weekly Progress */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Weekly Progress</CardTitle>
-            <CardDescription>Your quiz completion this week</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm">6 of 7 days completed</span>
-                <span className="text-sm font-medium">{stats.weeklyProgress}%</span>
-              </div>
-              <Progress value={stats.weeklyProgress} className="h-2" />
-              <div className="flex justify-between text-xs text-muted-foreground">
-                <span>Mon</span>
-                <span>Tue</span>
-                <span>Wed</span>
-                <span>Thu</span>
-                <span>Fri</span>
-                <span>Sat</span>
-                <span>Sun</span>
-              </div>
-              <div className="flex justify-between">
-                {['✅', '✅', '✅', '✅', '✅', '✅', '⭕'].map((status, index) => (
-                  <span key={index} className="text-lg">{status}</span>
-                ))}
-              </div>
-            </div>
-          </CardContent>
-        </Card>
 
         {/* Recent Activity & Quick Actions */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -200,36 +216,41 @@ export default function Dashboard() {
               <CardDescription>Your latest quiz performances</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {recentQuizzes.map((quiz, index) => (
-                <div key={index} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
-                  <div>
-                    <p className="font-medium">{quiz.subject}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {quiz.score}/{quiz.total} • {new Date(quiz.date).toLocaleDateString()}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-bold text-lg">{Math.round((quiz.score / quiz.total) * 100)}%</p>
-                    <div className="flex items-center">
-                      {Array.from({ length: 5 }, (_, i) => (
-                        <Star
-                          key={i}
-                          className={`h-3 w-3 ${
-                            i < Math.round((quiz.score / quiz.total) * 5)
-                              ? 'text-yellow-400 fill-current'
-                              : 'text-gray-300'
-                          }`}
-                        />
-                      ))}
+              {recentResults.length > 0 ? (
+                <>
+                  {recentResults.map((result, index) => (
+                    <div key={result.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                      <div>
+                        <p className="font-medium capitalize">{result.quiz_type} Quiz</p>
+                        <p className="text-sm text-muted-foreground">
+                          {result.score}/{result.total_questions} • {new Date(result.completed_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-bold text-lg">{Math.round((result.score / result.total_questions) * 100)}%</p>
+                        <div className="flex items-center">
+                          {Array.from({ length: 5 }, (_, i) => (
+                            <Star
+                              key={i}
+                              className={`h-3 w-3 ${
+                                i < Math.round((result.score / result.total_questions) * 5)
+                                  ? 'text-yellow-400 fill-current'
+                                  : 'text-gray-300'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  ))}
+                </>
+              ) : (
+                <div className="text-center py-8">
+                  <BookOpen className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">No quiz results yet</p>
+                  <p className="text-sm text-muted-foreground">Take your first quiz to see results here</p>
                 </div>
-              ))}
-              <Link to="/history">
-                <Button variant="outline" className="w-full">
-                  View All Results
-                </Button>
-              </Link>
+              )}
             </CardContent>
           </Card>
 
@@ -240,30 +261,26 @@ export default function Dashboard() {
               <CardDescription>Jump into your favorite practice modes</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Link to="/subjects">
+              <Link to="/quiz/daily">
+                <Button variant="outline" className="w-full justify-start h-12">
+                  <Target className="mr-3 h-4 w-4" />
+                  Daily Quiz
+                </Button>
+              </Link>
+              <Link to="/admin">
                 <Button variant="outline" className="w-full justify-start h-12">
                   <BookOpen className="mr-3 h-4 w-4" />
-                  Practice by Subject
+                  Manage Questions
                 </Button>
               </Link>
-              <Link to="/mock-exams">
-                <Button variant="outline" className="w-full justify-start h-12">
-                  <Calendar className="mr-3 h-4 w-4" />
-                  Take Mock Exam
-                </Button>
-              </Link>
-              <Link to="/current-affairs">
-                <Button variant="outline" className="w-full justify-start h-12">
-                  <TrendingUp className="mr-3 h-4 w-4" />
-                  Current Affairs
-                </Button>
-              </Link>
-              <Link to="/leaderboard">
-                <Button variant="outline" className="w-full justify-start h-12">
-                  <Trophy className="mr-3 h-4 w-4" />
-                  View Leaderboard
-                </Button>
-              </Link>
+              <Button variant="outline" className="w-full justify-start h-12 opacity-50" disabled>
+                <Calendar className="mr-3 h-4 w-4" />
+                Mock Exam (Coming Soon)
+              </Button>
+              <Button variant="outline" className="w-full justify-start h-12 opacity-50" disabled>
+                <TrendingUp className="mr-3 h-4 w-4" />
+                Current Affairs (Coming Soon)
+              </Button>
             </CardContent>
           </Card>
         </div>

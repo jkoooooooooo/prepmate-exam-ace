@@ -1,65 +1,45 @@
-import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import React, { useState, useEffect } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Label } from '@/components/ui/label'
+import { Progress } from '@/components/ui/progress'
 import { Clock, CheckCircle, XCircle, Brain } from 'lucide-react'
+import { supabase } from '@/integrations/supabase/client'
+import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
+import { useNavigate } from 'react-router-dom'
 
-// Sample questions - replace with data from Supabase
-const sampleQuestions = [
-  {
-    id: '1',
-    question: 'Who is known as the Father of the Indian Constitution?',
-    options: [
-      'Mahatma Gandhi',
-      'Dr. B.R. Ambedkar',
-      'Jawaharlal Nehru',
-      'Sardar Vallabhbhai Patel'
-    ],
-    correct_answer: 1,
-    explanation: 'Dr. B.R. Ambedkar is known as the Father of the Indian Constitution for his pivotal role as the chairman of the Drafting Committee.',
-    subject: 'Indian Constitution',
-    difficulty: 'medium'
-  },
-  {
-    id: '2',
-    question: 'Which planet is known as the Red Planet?',
-    options: ['Venus', 'Mars', 'Jupiter', 'Saturn'],
-    correct_answer: 1,
-    explanation: 'Mars is known as the Red Planet due to iron oxide (rust) on its surface, which gives it a reddish appearance.',
-    subject: 'Science',
-    difficulty: 'easy'
-  },
-  {
-    id: '3',
-    question: 'The capital of Kerala is:',
-    options: ['Kochi', 'Thiruvananthapuram', 'Kozhikode', 'Thrissur'],
-    correct_answer: 1,
-    explanation: 'Thiruvananthapuram is the capital city of Kerala, located in the southern part of the state.',
-    subject: 'Geography',
-    difficulty: 'easy'
-  }
-]
+interface Question {
+  id: string
+  question: string
+  options: string[]
+  correct_answer: number
+  explanation: string
+  subject: string
+  difficulty: 'easy' | 'medium' | 'hard'
+}
 
 interface DailyQuizProps {
   onComplete?: (score: number, total: number) => void
 }
 
 export function DailyQuiz({ onComplete }: DailyQuizProps) {
+  const { user } = useAuth()
+  const { toast } = useToast()
+  const navigate = useNavigate()
+  const [questions, setQuestions] = useState<Question[]>([])
   const [currentQuestion, setCurrentQuestion] = useState(0)
   const [selectedAnswers, setSelectedAnswers] = useState<number[]>([])
   const [showExplanation, setShowExplanation] = useState(false)
   const [quizCompleted, setQuizCompleted] = useState(false)
   const [timeLeft, setTimeLeft] = useState(600) // 10 minutes
   const [score, setScore] = useState(0)
-  const { toast } = useToast()
-  const navigate = useNavigate()
+  const [isLoading, setIsLoading] = useState(true)
 
-  // Timer countdown
+  useEffect(() => {
+    fetchDailyQuestions()
+  }, [])
+
   useEffect(() => {
     if (timeLeft > 0 && !quizCompleted) {
       const timer = setTimeout(() => setTimeLeft(timeLeft - 1), 1000)
@@ -68,6 +48,38 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
       handleQuizComplete()
     }
   }, [timeLeft, quizCompleted])
+
+  const fetchDailyQuestions = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('questions')
+        .select('*')
+        .limit(5)
+        .order('created_at', { ascending: false })
+
+      if (error) throw error
+
+      // Transform the data to match our Question interface
+      const transformedQuestions = (data || []).map(q => ({
+        ...q,
+        options: Array.isArray(q.options) ? q.options.map(String) : [],
+        difficulty: q.difficulty as 'easy' | 'medium' | 'hard',
+        explanation: q.explanation || ''
+      }))
+
+      setQuestions(transformedQuestions)
+      setSelectedAnswers(new Array(transformedQuestions.length).fill(-1))
+    } catch (error) {
+      console.error('Error fetching questions:', error)
+      toast({
+        title: "Error",
+        description: "Failed to load quiz questions. Please try again.",
+        variant: "destructive"
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
@@ -82,7 +94,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
   }
 
   const handleNext = () => {
-    if (selectedAnswers[currentQuestion] === undefined) {
+    if (selectedAnswers[currentQuestion] === -1) {
       toast({
         variant: 'destructive',
         title: 'Please select an answer',
@@ -97,31 +109,76 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
   const handleContinue = () => {
     setShowExplanation(false)
     
-    if (currentQuestion < sampleQuestions.length - 1) {
+    if (currentQuestion < questions.length - 1) {
       setCurrentQuestion(currentQuestion + 1)
     } else {
       handleQuizComplete()
     }
   }
 
-  const handleQuizComplete = () => {
+  const handleQuizComplete = async () => {
+    if (!user) return
+
     const finalScore = selectedAnswers.reduce((total, answer, index) => {
-      return total + (answer === sampleQuestions[index].correct_answer ? 1 : 0)
+      return total + (answer === questions[index]?.correct_answer ? 1 : 0)
     }, 0)
     
     setScore(finalScore)
+
+    try {
+      const { error } = await supabase
+        .from('quiz_results')
+        .insert({
+          user_id: user.id,
+          questions: questions as any,
+          user_answers: selectedAnswers as any,
+          score: finalScore,
+          total_questions: questions.length,
+          quiz_type: 'daily'
+        })
+
+      if (error) throw error
+
+      toast({
+        title: 'Quiz Completed!',
+        description: `You scored ${finalScore} out of ${questions.length}`,
+      })
+    } catch (error) {
+      console.error('Error saving quiz result:', error)
+      toast({
+        title: "Error",
+        description: "Failed to save quiz result.",
+        variant: "destructive"
+      })
+    }
+
     setQuizCompleted(true)
-    onComplete?.(finalScore, sampleQuestions.length)
-    
-    toast({
-      title: 'Quiz Completed!',
-      description: `You scored ${finalScore} out of ${sampleQuestions.length}`,
-    })
+    onComplete?.(finalScore, questions.length)
   }
 
-  const currentQ = sampleQuestions[currentQuestion]
+  if (isLoading) {
+    return (
+      <Card className="max-w-2xl mx-auto">
+        <CardContent className="flex items-center justify-center h-64">
+          <div className="text-lg">Loading quiz...</div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (questions.length === 0) {
+    return (
+      <Card className="max-w-2xl mx-auto">
+        <CardContent className="flex items-center justify-center h-64">
+          <div className="text-lg">No questions available</div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const currentQ = questions[currentQuestion]
   const isCorrect = selectedAnswers[currentQuestion] === currentQ.correct_answer
-  const progress = ((currentQuestion + 1) / sampleQuestions.length) * 100
+  const progress = ((currentQuestion + 1) / questions.length) * 100
 
   if (quizCompleted) {
     return (
@@ -132,10 +189,10 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
         </CardHeader>
         <CardContent className="text-center space-y-6">
           <div className="text-6xl font-bold text-primary">
-            {score}/{sampleQuestions.length}
+            {score}/{questions.length}
           </div>
           <div className="text-xl">
-            Score: {Math.round((score / sampleQuestions.length) * 100)}%
+            Score: {Math.round((score / questions.length) * 100)}%
           </div>
           
           <div className="flex justify-center gap-2">
@@ -143,7 +200,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
               <div
                 key={i}
                 className={`w-4 h-4 rounded-full ${
-                  i < Math.round((score / sampleQuestions.length) * 5)
+                  i < Math.round((score / questions.length) * 5)
                     ? 'bg-yellow-400'
                     : 'bg-gray-300'
                 }`}
@@ -151,12 +208,47 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
             ))}
           </div>
 
+          <div className="space-y-4">
+            {questions.map((question, index) => (
+              <div key={question.id} className="border rounded-lg p-4 text-left">
+                <h4 className="font-medium mb-2">{question.question}</h4>
+                <div className="space-y-2">
+                  {question.options.map((option, optionIndex) => (
+                    <div 
+                      key={optionIndex}
+                      className={`p-2 rounded ${
+                        optionIndex === question.correct_answer
+                          ? 'bg-green-100 text-green-800'
+                          : selectedAnswers[index] === optionIndex
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-gray-50'
+                      }`}
+                    >
+                      {option}
+                      {optionIndex === question.correct_answer && (
+                        <CheckCircle className="inline h-4 w-4 ml-2" />
+                      )}
+                      {selectedAnswers[index] === optionIndex && optionIndex !== question.correct_answer && (
+                        <XCircle className="inline h-4 w-4 ml-2" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {question.explanation && (
+                  <div className="mt-3 p-3 bg-blue-50 rounded">
+                    <p className="text-sm text-blue-800">{question.explanation}</p>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
           <div className="space-y-3">
             <Button onClick={() => navigate('/dashboard')} className="w-full">
               Back to Dashboard
             </Button>
-            <Button variant="outline" onClick={() => navigate('/leaderboard')} className="w-full">
-              View Leaderboard
+            <Button variant="outline" onClick={() => window.location.reload()} className="w-full">
+              Take Another Quiz
             </Button>
           </div>
         </CardContent>
@@ -173,7 +265,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
             <div className="flex items-center gap-2">
               <Brain className="h-5 w-5 text-primary" />
               <span className="font-medium">
-                Question {currentQuestion + 1} of {sampleQuestions.length}
+                Question {currentQuestion + 1} of {questions.length}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -201,22 +293,24 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
         <CardContent className="space-y-4">
           {!showExplanation ? (
             <>
-              <RadioGroup
-                value={selectedAnswers[currentQuestion]?.toString()}
-                onValueChange={(value) => handleAnswerSelect(parseInt(value))}
-              >
+              <div className="space-y-3">
                 {currentQ.options.map((option, index) => (
-                  <div key={index} className="flex items-center space-x-2 p-3 rounded-lg border hover:bg-muted/50">
-                    <RadioGroupItem value={index.toString()} id={`option-${index}`} />
-                    <Label htmlFor={`option-${index}`} className="flex-1 cursor-pointer">
-                      {option}
-                    </Label>
-                  </div>
+                  <Button
+                    key={index}
+                    variant={selectedAnswers[currentQuestion] === index ? "default" : "outline"}
+                    className="w-full justify-start text-left h-auto p-4"
+                    onClick={() => handleAnswerSelect(index)}
+                  >
+                    <span className="mr-3 font-semibold">
+                      {String.fromCharCode(65 + index)}.
+                    </span>
+                    {option}
+                  </Button>
                 ))}
-              </RadioGroup>
+              </div>
               
               <Button onClick={handleNext} className="w-full" size="lg">
-                {currentQuestion === sampleQuestions.length - 1 ? 'Finish Quiz' : 'Next Question'}
+                {currentQuestion === questions.length - 1 ? 'Finish Quiz' : 'Next Question'}
               </Button>
             </>
           ) : (
@@ -270,7 +364,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
               </div>
 
               <Button onClick={handleContinue} className="w-full" size="lg">
-                {currentQuestion === sampleQuestions.length - 1 ? 'View Results' : 'Continue'}
+                {currentQuestion === questions.length - 1 ? 'View Results' : 'Continue'}
               </Button>
             </>
           )}

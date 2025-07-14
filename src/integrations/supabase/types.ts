@@ -14,7 +14,108 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          full_name: string | null
+          id: string
+          streak_count: number | null
+          total_score: number | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          streak_count?: number | null
+          total_score?: number | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          full_name?: string | null
+          id?: string
+          streak_count?: number | null
+          total_score?: number | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      questions: {
+        Row: {
+          correct_answer: number
+          created_at: string
+          difficulty: string
+          explanation: string | null
+          id: string
+          options: Json
+          question: string
+          subject: string
+          updated_at: string
+        }
+        Insert: {
+          correct_answer: number
+          created_at?: string
+          difficulty: string
+          explanation?: string | null
+          id?: string
+          options: Json
+          question: string
+          subject: string
+          updated_at?: string
+        }
+        Update: {
+          correct_answer?: number
+          created_at?: string
+          difficulty?: string
+          explanation?: string | null
+          id?: string
+          options?: Json
+          question?: string
+          subject?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      quiz_results: {
+        Row: {
+          completed_at: string
+          id: string
+          questions: Json
+          quiz_type: string
+          score: number
+          total_questions: number
+          user_answers: Json
+          user_id: string
+        }
+        Insert: {
+          completed_at?: string
+          id?: string
+          questions: Json
+          quiz_type: string
+          score: number
+          total_questions: number
+          user_answers: Json
+          user_id: string
+        }
+        Update: {
+          completed_at?: string
+          id?: string
+          questions?: Json
+          quiz_type?: string
+          score?: number
+          total_questions?: number
+          user_answers?: Json
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
