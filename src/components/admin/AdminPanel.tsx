@@ -10,6 +10,18 @@ import { useToast } from '@/hooks/use-toast'
 import { Plus, Trash2, Save, Upload, Edit } from 'lucide-react'
 import { supabase } from '@/integrations/supabase/client'
 
+interface SubQuestion {
+  id: string
+  question: string
+  options: string[]
+  correct_answer: number
+  explanation: string
+  subject: string
+  difficulty: 'easy' | 'medium' | 'hard'
+  trigger_answer_index: number
+  sub_question_order: number
+}
+
 interface Question {
   id: string
   question: string
@@ -18,6 +30,11 @@ interface Question {
   explanation: string
   subject: string
   difficulty: 'easy' | 'medium' | 'hard'
+  question_type?: 'base' | 'sub'
+  parent_question_id?: string
+  trigger_answer_index?: number
+  sub_question_order?: number
+  sub_questions?: SubQuestion[]
 }
 
 export function AdminPanel() {
@@ -31,8 +48,17 @@ export function AdminPanel() {
     correct_answer: 0,
     explanation: '',
     subject: '',
-    difficulty: 'easy' as 'easy' | 'medium' | 'hard'
+    difficulty: 'easy' as 'easy' | 'medium' | 'hard',
+    question_type: 'base' as 'base' | 'sub',
+    parent_question_id: '',
+    trigger_answer_index: 0,
+    sub_question_order: 0
   })
+  
+  // Additional state for sub-question management
+  const [selectedBaseQuestion, setSelectedBaseQuestion] = useState<Question | null>(null)
+  const [showSubQuestionForm, setShowSubQuestionForm] = useState(false)
+  const [baseQuestions, setBaseQuestions] = useState<Question[]>([])
 
   useEffect(() => {
     fetchQuestions()
@@ -52,10 +78,18 @@ export function AdminPanel() {
         ...q,
         options: Array.isArray(q.options) ? q.options.map(String) : [],
         difficulty: q.difficulty as 'easy' | 'medium' | 'hard',
-        explanation: q.explanation || ''
+        explanation: q.explanation || '',
+        question_type: q.question_type || 'base',
+        parent_question_id: q.parent_question_id || '',
+        trigger_answer_index: q.trigger_answer_index || 0,
+        sub_question_order: q.sub_question_order || 0
       }))
       
       setQuestions(transformedQuestions)
+      
+      // Separate base questions for sub-question creation
+      const baseQs = transformedQuestions.filter(q => q.question_type === 'base')
+      setBaseQuestions(baseQs)
     } catch (error) {
       console.error('Error fetching questions:', error)
       toast({
@@ -136,6 +170,16 @@ export function AdminPanel() {
       return
     }
 
+    // Additional validation for sub-questions
+    if (formData.question_type === 'sub' && !formData.parent_question_id) {
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Parent question is required for sub-questions'
+      })
+      return
+    }
+
     try {
       const questionData = {
         question: formData.question,
@@ -143,7 +187,13 @@ export function AdminPanel() {
         correct_answer: formData.correct_answer,
         explanation: formData.explanation,
         subject: formData.subject,
-        difficulty: formData.difficulty
+        difficulty: formData.difficulty,
+        question_type: formData.question_type,
+        ...(formData.question_type === 'sub' && {
+          parent_question_id: formData.parent_question_id,
+          trigger_answer_index: formData.trigger_answer_index,
+          sub_question_order: formData.sub_question_order
+        })
       }
 
       if (editingQuestion) {
@@ -212,13 +262,19 @@ export function AdminPanel() {
 
   const resetForm = () => {
     setEditingQuestion(null)
+    setSelectedBaseQuestion(null)
+    setShowSubQuestionForm(false)
     setFormData({
       question: '',
       options: ['', '', '', ''],
       correct_answer: 0,
       explanation: '',
       subject: '',
-      difficulty: 'easy' as 'easy' | 'medium' | 'hard'
+      difficulty: 'easy' as 'easy' | 'medium' | 'hard',
+      question_type: 'base' as 'base' | 'sub',
+      parent_question_id: '',
+      trigger_answer_index: 0,
+      sub_question_order: 0
     })
   }
 
@@ -233,6 +289,31 @@ export function AdminPanel() {
     'Reasoning',
     'English Language'
   ]
+
+  // Helper functions for sub-question management
+  const handleCreateSubQuestion = (baseQuestion: Question) => {
+    setSelectedBaseQuestion(baseQuestion)
+    setFormData({
+      ...formData,
+      question_type: 'sub',
+      parent_question_id: baseQuestion.id,
+      subject: baseQuestion.subject, // Default to parent's subject
+      sub_question_order: getNextSubQuestionOrder(baseQuestion.id)
+    })
+    setShowSubQuestionForm(true)
+  }
+
+  const getSubQuestionsForBaseQuestion = (baseQuestionId: string) => {
+    return questions.filter(q => q.parent_question_id === baseQuestionId)
+      .sort((a, b) => (a.sub_question_order || 0) - (b.sub_question_order || 0))
+  }
+
+  const getNextSubQuestionOrder = (baseQuestionId: string) => {
+    const subQuestions = getSubQuestionsForBaseQuestion(baseQuestionId)
+    return subQuestions.length > 0 
+      ? Math.max(...subQuestions.map(sq => sq.sub_question_order || 0)) + 1 
+      : 1
+  }
 
   if (isLoading) {
     return (
@@ -349,6 +430,98 @@ export function AdminPanel() {
               </div>
             </div>
 
+            {/* Question Type and Sub-question Fields */}
+            <div className="space-y-4 border-t pt-4">
+              <div className="space-y-2">
+                <Label>Question Type</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="question_type"
+                      value="base"
+                      checked={formData.question_type === 'base'}
+                      onChange={(e) => setFormData({ ...formData, question_type: 'base' })}
+                    />
+                    Base Question
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="question_type"
+                      value="sub"
+                      checked={formData.question_type === 'sub'}
+                      onChange={(e) => setFormData({ ...formData, question_type: 'sub' })}
+                    />
+                    Sub-question
+                  </label>
+                </div>
+              </div>
+
+              {formData.question_type === 'sub' && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Parent Question</Label>
+                    <Select
+                      value={formData.parent_question_id}
+                      onValueChange={(value) => setFormData({ ...formData, parent_question_id: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select parent question" />
+                      </SelectTrigger>
+                      <SelectContent className="bg-card border border-border shadow-lg z-50">
+                        {baseQuestions.map((question) => (
+                          <SelectItem key={question.id} value={question.id}>
+                            {question.question.substring(0, 60)}...
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {formData.parent_question_id && (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Trigger Answer</Label>
+                        <Select
+                          value={formData.trigger_answer_index.toString()}
+                          onValueChange={(value) => setFormData({ ...formData, trigger_answer_index: parseInt(value) })}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select which answer triggers this sub-question" />
+                          </SelectTrigger>
+                          <SelectContent className="bg-card border border-border shadow-lg z-50">
+                            {baseQuestions.find(q => q.id === formData.parent_question_id)?.options.map((option, index) => (
+                              <SelectItem key={index} value={index.toString()}>
+                                {String.fromCharCode(65 + index)}. {option}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <p className="text-sm text-muted-foreground">
+                          This sub-question will appear when the user selects the chosen answer
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label htmlFor="sub_question_order">Sub-question Order</Label>
+                        <Input
+                          id="sub_question_order"
+                          type="number"
+                          min="1"
+                          value={formData.sub_question_order}
+                          onChange={(e) => setFormData({ ...formData, sub_question_order: parseInt(e.target.value) || 1 })}
+                        />
+                        <p className="text-sm text-muted-foreground">
+                          Order in which this sub-question appears (1 = first)
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="explanation">Explanation</Label>
               <Textarea
@@ -388,54 +561,134 @@ export function AdminPanel() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-4 max-h-96 overflow-y-auto">
-            {questions.map((question) => (
-              <div key={question.id} className="border rounded-lg p-4 space-y-3">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <h4 className="font-medium">{question.question}</h4>
-                    <div className="flex gap-2 mt-2">
-                      <Badge variant="secondary">{question.subject}</Badge>
-                      <Badge variant={question.difficulty === 'easy' ? 'default' : question.difficulty === 'medium' ? 'secondary' : 'destructive'}>
-                        {question.difficulty}
-                      </Badge>
+          <div className="space-y-6 max-h-96 overflow-y-auto">
+            {baseQuestions.map((baseQuestion) => {
+              const subQuestions = getSubQuestionsForBaseQuestion(baseQuestion.id)
+              
+              return (
+                <div key={baseQuestion.id} className="border rounded-lg p-4 space-y-4">
+                  {/* Base Question */}
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <h4 className="font-medium">{baseQuestion.question}</h4>
+                          <Badge variant="outline" className="text-xs">Base</Badge>
+                        </div>
+                        <div className="flex gap-2">
+                          <Badge variant="secondary">{baseQuestion.subject}</Badge>
+                          <Badge variant={baseQuestion.difficulty === 'easy' ? 'default' : baseQuestion.difficulty === 'medium' ? 'secondary' : 'destructive'}>
+                            {baseQuestion.difficulty}
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleCreateSubQuestion(baseQuestion)}
+                          title="Add sub-question"
+                        >
+                          <Plus className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleEdit(baseQuestion)}
+                        >
+                          <Edit className="h-3 w-3" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleDelete(baseQuestion.id)}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex gap-1">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleEdit(question)}
-                    >
-                      <Edit className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleDelete(question.id)}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-                
-                <div className="space-y-1">
-                  {question.options.map((option, index) => (
-                    <div key={index} className={`text-sm p-2 rounded ${
-                      index === question.correct_answer 
-                        ? 'bg-green-100 dark:bg-green-900/20 font-medium' 
-                        : 'bg-muted/50'
-                    }`}>
-                      {index === question.correct_answer && '✓ '}{option}
+                    
+                    <div className="space-y-1">
+                      {baseQuestion.options.map((option, index) => (
+                        <div key={index} className={`text-sm p-2 rounded ${
+                          index === baseQuestion.correct_answer 
+                            ? 'bg-green-100 dark:bg-green-900/20 font-medium' 
+                            : 'bg-muted/50'
+                        }`}>
+                          {index === baseQuestion.correct_answer && '✓ '}{option}
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                    
+                    <p className="text-sm text-muted-foreground italic">
+                      {baseQuestion.explanation}
+                    </p>
+                  </div>
+
+                  {/* Sub-questions */}
+                  {subQuestions.length > 0 && (
+                    <div className="ml-4 border-l-2 border-muted pl-4 space-y-3">
+                      <h5 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+                        Sub-questions ({subQuestions.length})
+                      </h5>
+                      {subQuestions.map((subQuestion) => (
+                        <div key={subQuestion.id} className="border rounded p-3 bg-muted/30 space-y-2">
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <h6 className="text-sm font-medium">{subQuestion.question}</h6>
+                                <Badge variant="outline" className="text-xs">Sub</Badge>
+                              </div>
+                              <div className="flex gap-2 text-xs">
+                                <span className="text-muted-foreground">
+                                  Triggered by: Answer {String.fromCharCode(65 + (subQuestion.trigger_answer_index || 0))}
+                                </span>
+                                <span className="text-muted-foreground">•</span>
+                                <span className="text-muted-foreground">
+                                  Order: {subQuestion.sub_question_order || 1}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex gap-1">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleEdit(subQuestion)}
+                              >
+                                <Edit className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleDelete(subQuestion.id)}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </div>
+                          
+                          <div className="space-y-1">
+                            {subQuestion.options.map((option, index) => (
+                              <div key={index} className={`text-xs p-1.5 rounded ${
+                                index === subQuestion.correct_answer 
+                                  ? 'bg-green-100 dark:bg-green-900/20 font-medium' 
+                                  : 'bg-muted/50'
+                              }`}>
+                                {index === subQuestion.correct_answer && '✓ '}{option}
+                              </div>
+                            ))}
+                          </div>
+                          
+                          <p className="text-xs text-muted-foreground italic">
+                            {subQuestion.explanation}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                
-                <p className="text-sm text-muted-foreground italic">
-                  {question.explanation}
-                </p>
-              </div>
-            ))}
+              )
+            })}
           </div>
         </CardContent>
       </Card>

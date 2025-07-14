@@ -9,6 +9,18 @@ import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
 import { useNavigate } from 'react-router-dom'
 
+interface SubQuestion {
+  id: string
+  question: string
+  options: string[]
+  correct_answer: number
+  explanation: string
+  subject: string
+  difficulty: 'easy' | 'medium' | 'hard'
+  trigger_answer_index: number
+  sub_question_order: number
+}
+
 interface Question {
   id: string
   question: string
@@ -17,6 +29,11 @@ interface Question {
   explanation: string
   subject: string
   difficulty: 'easy' | 'medium' | 'hard'
+  question_type?: 'base' | 'sub'
+  parent_question_id?: string
+  trigger_answer_index?: number
+  sub_question_order?: number
+  sub_questions?: SubQuestion[]
 }
 
 interface DailyQuizProps {
@@ -35,6 +52,22 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
   const [timeLeft, setTimeLeft] = useState(600) // 10 minutes
   const [score, setScore] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
+  
+  // Sub-question state management
+  const [currentSubQuestions, setCurrentSubQuestions] = useState<SubQuestion[]>([])
+  const [currentSubQuestionIndex, setCurrentSubQuestionIndex] = useState(0)
+  const [isInSubQuestion, setIsInSubQuestion] = useState(false)
+  const [subQuestionAnswers, setSubQuestionAnswers] = useState<number[]>([])
+  const [showSubExplanation, setShowSubExplanation] = useState(false)
+  
+  // Track all answered questions for scoring
+  const [allAnsweredQuestions, setAllAnsweredQuestions] = useState<Array<{
+    question: Question | SubQuestion
+    userAnswer: number
+    isCorrect: boolean
+    isSubQuestion: boolean
+  }>>([])
+  const [totalQuestionsAnswered, setTotalQuestionsAnswered] = useState(0)
 
   useEffect(() => {
     fetchDailyQuestions()
@@ -51,24 +84,50 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
 
   const fetchDailyQuestions = async () => {
     try {
-      const { data, error } = await supabase
+      // First, fetch only base questions
+      const { data: baseQuestions, error: baseError } = await supabase
         .from('questions')
         .select('*')
+        .eq('question_type', 'base')
         .limit(5)
         .order('created_at', { ascending: false })
 
-      if (error) throw error
+      if (baseError) throw baseError
 
-      // Transform the data to match our Question interface
-      const transformedQuestions = (data || []).map(q => ({
-        ...q,
-        options: Array.isArray(q.options) ? q.options.map(String) : [],
-        difficulty: q.difficulty as 'easy' | 'medium' | 'hard',
-        explanation: q.explanation || ''
-      }))
+      // For each base question, fetch its sub-questions
+      const questionsWithSubs = await Promise.all(
+        (baseQuestions || []).map(async (baseQuestion) => {
+          const { data: subQuestions, error: subError } = await supabase
+            .from('questions')
+            .select('*')
+            .eq('parent_question_id', baseQuestion.id)
+            .order('sub_question_order', { ascending: true })
 
-      setQuestions(transformedQuestions)
-      setSelectedAnswers(new Array(transformedQuestions.length).fill(-1))
+          if (subError) {
+            console.warn('Error fetching sub-questions for', baseQuestion.id, subError)
+          }
+
+          // Transform sub-questions
+          const transformedSubQuestions = (subQuestions || []).map(sq => ({
+            ...sq,
+            options: Array.isArray(sq.options) ? sq.options.map(String) : [],
+            difficulty: sq.difficulty as 'easy' | 'medium' | 'hard',
+            explanation: sq.explanation || ''
+          }))
+
+          // Transform base question and add sub-questions
+          return {
+            ...baseQuestion,
+            options: Array.isArray(baseQuestion.options) ? baseQuestion.options.map(String) : [],
+            difficulty: baseQuestion.difficulty as 'easy' | 'medium' | 'hard',
+            explanation: baseQuestion.explanation || '',
+            sub_questions: transformedSubQuestions
+          }
+        })
+      )
+
+      setQuestions(questionsWithSubs)
+      setSelectedAnswers(new Array(questionsWithSubs.length).fill(-1))
     } catch (error) {
       console.error('Error fetching questions:', error)
       toast({
@@ -88,52 +147,147 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
   }
 
   const handleAnswerSelect = (answerIndex: number) => {
-    const newAnswers = [...selectedAnswers]
-    newAnswers[currentQuestion] = answerIndex
-    setSelectedAnswers(newAnswers)
+    if (isInSubQuestion) {
+      const newSubAnswers = [...subQuestionAnswers]
+      newSubAnswers[currentSubQuestionIndex] = answerIndex
+      setSubQuestionAnswers(newSubAnswers)
+    } else {
+      const newAnswers = [...selectedAnswers]
+      newAnswers[currentQuestion] = answerIndex
+      setSelectedAnswers(newAnswers)
+    }
   }
 
   const handleNext = () => {
-    if (selectedAnswers[currentQuestion] === -1) {
-      toast({
-        variant: 'destructive',
-        title: 'Please select an answer',
-        description: 'You must select an answer before proceeding.',
-      })
-      return
+    if (isInSubQuestion) {
+      // Handle sub-question answer
+      if (subQuestionAnswers[currentSubQuestionIndex] === -1) {
+        toast({
+          variant: 'destructive',
+          title: 'Please select an answer',
+          description: 'You must select an answer before proceeding.',
+        })
+        return
+      }
+      setShowSubExplanation(true)
+    } else {
+      // Handle main question answer
+      if (selectedAnswers[currentQuestion] === -1) {
+        toast({
+          variant: 'destructive',
+          title: 'Please select an answer',
+          description: 'You must select an answer before proceeding.',
+        })
+        return
+      }
+      setShowExplanation(true)
     }
-
-    setShowExplanation(true)
   }
 
   const handleContinue = () => {
-    setShowExplanation(false)
-    
-    if (currentQuestion < questions.length - 1) {
-      setCurrentQuestion(currentQuestion + 1)
+    if (isInSubQuestion) {
+      // Record sub-question answer
+      const currentSubQ = currentSubQuestions[currentSubQuestionIndex]
+      const userAnswer = subQuestionAnswers[currentSubQuestionIndex]
+      const isCorrect = userAnswer === currentSubQ.correct_answer
+      
+      setAllAnsweredQuestions(prev => [...prev, {
+        question: currentSubQ,
+        userAnswer,
+        isCorrect,
+        isSubQuestion: true
+      }])
+      setTotalQuestionsAnswered(prev => prev + 1)
+      
+      // Continue with sub-questions
+      setShowSubExplanation(false)
+      
+      if (currentSubQuestionIndex < currentSubQuestions.length - 1) {
+        // Move to next sub-question
+        setCurrentSubQuestionIndex(currentSubQuestionIndex + 1)
+      } else {
+        // Finished all sub-questions, go back to main questions
+        setIsInSubQuestion(false)
+        setCurrentSubQuestions([])
+        setCurrentSubQuestionIndex(0)
+        setSubQuestionAnswers([])
+        
+        if (currentQuestion < questions.length - 1) {
+          setCurrentQuestion(currentQuestion + 1)
+        } else {
+          handleQuizComplete()
+        }
+      }
     } else {
-      handleQuizComplete()
+      // Record main question answer
+      const currentQ = questions[currentQuestion]
+      const userAnswer = selectedAnswers[currentQuestion]
+      const isCorrect = userAnswer === currentQ.correct_answer
+      
+      setAllAnsweredQuestions(prev => [...prev, {
+        question: currentQ,
+        userAnswer,
+        isCorrect,
+        isSubQuestion: false
+      }])
+      setTotalQuestionsAnswered(prev => prev + 1)
+      
+      // Main question flow
+      setShowExplanation(false)
+      
+      // Check if there are sub-questions to show based on the selected answer
+      const selectedAnswer = selectedAnswers[currentQuestion]
+      
+      if (currentQ.sub_questions && currentQ.sub_questions.length > 0) {
+        // Filter sub-questions that match the selected answer
+        const triggeredSubQuestions = currentQ.sub_questions.filter(
+          sq => sq.trigger_answer_index === selectedAnswer
+        )
+        
+        if (triggeredSubQuestions.length > 0) {
+          // Set up sub-questions
+          setCurrentSubQuestions(triggeredSubQuestions)
+          setSubQuestionAnswers(new Array(triggeredSubQuestions.length).fill(-1))
+          setCurrentSubQuestionIndex(0)
+          setIsInSubQuestion(true)
+          return // Don't proceed to next main question yet
+        }
+      }
+      
+      // No sub-questions triggered, proceed to next main question
+      if (currentQuestion < questions.length - 1) {
+        setCurrentQuestion(currentQuestion + 1)
+      } else {
+        handleQuizComplete()
+      }
     }
   }
 
   const handleQuizComplete = async () => {
     if (!user) return
 
-    const finalScore = selectedAnswers.reduce((total, answer, index) => {
-      return total + (answer === questions[index]?.correct_answer ? 1 : 0)
+    const finalScore = allAnsweredQuestions.reduce((total, answeredQ) => {
+      return total + (answeredQ.isCorrect ? 1 : 0)
     }, 0)
     
     setScore(finalScore)
 
     try {
+      // Save quiz result with enhanced data including sub-questions
       const { error } = await supabase
         .from('quiz_results')
         .insert({
           user_id: user.id,
-          questions: questions as any,
-          user_answers: selectedAnswers as any,
+          questions: {
+            base_questions: questions,
+            all_answered: allAnsweredQuestions
+          } as any,
+          user_answers: {
+            main_answers: selectedAnswers,
+            all_answered: allAnsweredQuestions.map(q => q.userAnswer)
+          } as any,
           score: finalScore,
-          total_questions: questions.length,
+          total_questions: totalQuestionsAnswered,
           quiz_type: 'daily'
         })
 
@@ -141,7 +295,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
 
       toast({
         title: 'Quiz Completed!',
-        description: `You scored ${finalScore} out of ${questions.length}`,
+        description: `You scored ${finalScore} out of ${totalQuestionsAnswered} questions (including sub-questions)`,
       })
     } catch (error) {
       console.error('Error saving quiz result:', error)
@@ -153,7 +307,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
     }
 
     setQuizCompleted(true)
-    onComplete?.(finalScore, questions.length)
+    onComplete?.(finalScore, totalQuestionsAnswered)
   }
 
   if (isLoading) {
@@ -176,9 +330,25 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
     )
   }
 
-  const currentQ = questions[currentQuestion]
-  const isCorrect = selectedAnswers[currentQuestion] === currentQ.correct_answer
-  const progress = ((currentQuestion + 1) / questions.length) * 100
+  // Determine current question and answer state
+  const currentQ = isInSubQuestion 
+    ? currentSubQuestions[currentSubQuestionIndex] 
+    : questions[currentQuestion]
+  
+  const userAnswer = isInSubQuestion 
+    ? subQuestionAnswers[currentSubQuestionIndex] 
+    : selectedAnswers[currentQuestion]
+  
+  const isCorrect = userAnswer === currentQ.correct_answer
+  const showExplanationState = isInSubQuestion ? showSubExplanation : showExplanation
+  
+  // Calculate progress including sub-questions
+  const totalBaseQuestions = questions.length
+  const progressBase = currentQuestion / totalBaseQuestions
+  const subQuestionProgress = isInSubQuestion 
+    ? (currentSubQuestionIndex + 1) / currentSubQuestions.length * (1 / totalBaseQuestions)
+    : 0
+  const progress = (progressBase + subQuestionProgress) * 100
 
   if (quizCompleted) {
     return (
@@ -189,10 +359,13 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
         </CardHeader>
         <CardContent className="text-center space-y-6">
           <div className="text-6xl font-bold text-primary">
-            {score}/{questions.length}
+            {score}/{totalQuestionsAnswered}
           </div>
           <div className="text-xl">
-            Score: {Math.round((score / questions.length) * 100)}%
+            Score: {Math.round((score / totalQuestionsAnswered) * 100)}%
+          </div>
+          <div className="text-sm text-muted-foreground">
+            {questions.length} base questions, {totalQuestionsAnswered - questions.length} sub-questions
           </div>
           
           <div className="flex justify-center gap-2">
@@ -200,7 +373,7 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
               <div
                 key={i}
                 className={`w-4 h-4 rounded-full ${
-                  i < Math.round((score / questions.length) * 5)
+                  i < Math.round((score / totalQuestionsAnswered) * 5)
                     ? 'bg-yellow-400'
                     : 'bg-gray-300'
                 }`}
@@ -209,34 +382,39 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
           </div>
 
           <div className="space-y-4">
-            {questions.map((question, index) => (
-              <div key={question.id} className="border rounded-lg p-4 text-left">
-                <h4 className="font-medium mb-2">{question.question}</h4>
+            {allAnsweredQuestions.map((answeredQ, index) => (
+              <div key={`${answeredQ.question.id}-${index}`} className="border rounded-lg p-4 text-left">
+                <div className="flex items-center gap-2 mb-2">
+                  <h4 className="font-medium flex-1">{answeredQ.question.question}</h4>
+                  {answeredQ.isSubQuestion && (
+                    <Badge variant="outline" className="text-xs">Sub-question</Badge>
+                  )}
+                </div>
                 <div className="space-y-2">
-                  {question.options.map((option, optionIndex) => (
+                  {answeredQ.question.options.map((option, optionIndex) => (
                     <div 
                       key={optionIndex}
                       className={`p-2 rounded ${
-                        optionIndex === question.correct_answer
+                        optionIndex === answeredQ.question.correct_answer
                           ? 'bg-green-100 text-green-800'
-                          : selectedAnswers[index] === optionIndex
+                          : answeredQ.userAnswer === optionIndex
                           ? 'bg-red-100 text-red-800'
                           : 'bg-gray-50'
                       }`}
                     >
                       {option}
-                      {optionIndex === question.correct_answer && (
+                      {optionIndex === answeredQ.question.correct_answer && (
                         <CheckCircle className="inline h-4 w-4 ml-2" />
                       )}
-                      {selectedAnswers[index] === optionIndex && optionIndex !== question.correct_answer && (
+                      {answeredQ.userAnswer === optionIndex && optionIndex !== answeredQ.question.correct_answer && (
                         <XCircle className="inline h-4 w-4 ml-2" />
                       )}
                     </div>
                   ))}
                 </div>
-                {question.explanation && (
+                {answeredQ.question.explanation && (
                   <div className="mt-3 p-3 bg-blue-50 rounded">
-                    <p className="text-sm text-blue-800">{question.explanation}</p>
+                    <p className="text-sm text-blue-800">{answeredQ.question.explanation}</p>
                   </div>
                 )}
               </div>
@@ -265,7 +443,11 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
             <div className="flex items-center gap-2">
               <Brain className="h-5 w-5 text-primary" />
               <span className="font-medium">
-                Question {currentQuestion + 1} of {questions.length}
+                {isInSubQuestion ? (
+                  <>Sub-question {currentSubQuestionIndex + 1} of {currentSubQuestions.length} (Question {currentQuestion + 1})</>
+                ) : (
+                  <>Question {currentQuestion + 1} of {questions.length}</>
+                )}
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -281,7 +463,12 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <Badge variant="secondary">{currentQ.subject}</Badge>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">{currentQ.subject}</Badge>
+              {isInSubQuestion && (
+                <Badge variant="outline" className="text-xs">Sub-question</Badge>
+              )}
+            </div>
             <Badge variant={currentQ.difficulty === 'easy' ? 'default' : currentQ.difficulty === 'medium' ? 'secondary' : 'destructive'}>
               {currentQ.difficulty}
             </Badge>
@@ -291,13 +478,13 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {!showExplanation ? (
+          {!showExplanationState ? (
             <>
               <div className="space-y-3">
                 {currentQ.options.map((option, index) => (
                   <Button
                     key={index}
-                    variant={selectedAnswers[currentQuestion] === index ? "default" : "outline"}
+                    variant={userAnswer === index ? "default" : "outline"}
                     className="w-full justify-start text-left h-auto p-4"
                     onClick={() => handleAnswerSelect(index)}
                   >
@@ -310,7 +497,10 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
               </div>
               
               <Button onClick={handleNext} className="w-full" size="lg">
-                {currentQuestion === questions.length - 1 ? 'Finish Quiz' : 'Next Question'}
+                {isInSubQuestion 
+                  ? (currentSubQuestionIndex === currentSubQuestions.length - 1 ? 'Finish Sub-questions' : 'Next Sub-question')
+                  : (currentQuestion === questions.length - 1 ? 'Finish Quiz' : 'Next Question')
+                }
               </Button>
             </>
           ) : (
@@ -323,14 +513,14 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
                     className={`flex items-center space-x-2 p-3 rounded-lg border ${
                       index === currentQ.correct_answer
                         ? 'bg-green-100 border-green-300 dark:bg-green-900/20 dark:border-green-700'
-                        : index === selectedAnswers[currentQuestion] && index !== currentQ.correct_answer
+                        : index === userAnswer && index !== currentQ.correct_answer
                         ? 'bg-red-100 border-red-300 dark:bg-red-900/20 dark:border-red-700'
                         : 'bg-muted/30'
                     }`}
                   >
                     {index === currentQ.correct_answer ? (
                       <CheckCircle className="h-5 w-5 text-green-600" />
-                    ) : index === selectedAnswers[currentQuestion] && index !== currentQ.correct_answer ? (
+                    ) : index === userAnswer && index !== currentQ.correct_answer ? (
                       <XCircle className="h-5 w-5 text-red-600" />
                     ) : (
                       <div className="h-5 w-5" />
@@ -364,7 +554,12 @@ export function DailyQuiz({ onComplete }: DailyQuizProps) {
               </div>
 
               <Button onClick={handleContinue} className="w-full" size="lg">
-                {currentQuestion === questions.length - 1 ? 'View Results' : 'Continue'}
+                {isInSubQuestion 
+                  ? (currentSubQuestionIndex === currentSubQuestions.length - 1 
+                      ? (currentQuestion === questions.length - 1 ? 'View Results' : 'Continue to Next Question')
+                      : 'Continue')
+                  : (currentQuestion === questions.length - 1 ? 'View Results' : 'Continue')
+                }
               </Button>
             </>
           )}
