@@ -10,7 +10,8 @@ import {
   Settings, 
   LogOut,
   User,
-  FileText
+  FileText,
+  Shield
 } from 'lucide-react'
 import {
   DropdownMenu,
@@ -36,6 +37,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     { name: 'Subject Tests', href: '/subjects', icon: BookOpen },
     { name: 'Mock Exams', href: '/mock-exams', icon: FileText },
     { name: 'Leaderboard', href: '/leaderboard', icon: Trophy },
+    { name: 'Admin Panel', href: '/admin', icon: Shield },
   ]
 
   const handleSignOut = async () => {
