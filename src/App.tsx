@@ -37,6 +37,11 @@ const App = () => (
                 <DailyQuizPage />
               </ProtectedRoute>
             } />
+            <Route path="/subjects" element={
+              <ProtectedRoute>
+                <Dashboard />
+              </ProtectedRoute>
+            } />
             <Route path="/admin" element={
               <ProtectedRoute>
                 <AdminPage />
